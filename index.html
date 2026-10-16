@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f5f7fb">
+  <meta name="description" content="Interactive Egypt CPI inflation dashboard">
+  <title>Egypt CPI Inflation Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Egypt CPI dashboard home">
+        <span class="brand-mark"><i data-lucide="chart-no-axes-combined"></i></span>
+        <span><b>Egypt CPI</b><small>Inflation dashboard</small></span>
+      </a>
+      <div class="top-actions">
+        <span class="live-dot"></span><span id="dataStatus" class="status-text">Connecting to data…</span>
+        <button id="refreshBtn" class="icon-button" title="Refresh data" aria-label="Refresh data"><i data-lucide="refresh-cw"></i></button>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">MACROECONOMIC MONITOR</p>
+          <h1>Inflation at a glance</h1>
+          <p class="subtitle">Egypt's consumer price index, trends and inflation contributions.</p>
+        </div>
+        <div class="latest-pill"><i data-lucide="calendar-days"></i><span>Latest month</span><b id="latestMonth">—</b></div>
+      </section>
+
+      <section class="overview-grid" aria-label="Latest inflation indicators">
+        <article class="metric-card metric-primary">
+          <div class="metric-heading"><span>Headline inflation · YoY</span><span class="metric-icon"><i data-lucide="trending-up"></i></span></div>
+          <div class="metric-value" id="headlineYoY">—</div>
+          <div class="metric-foot"><span id="headlineYoYPrev">Previous month: —</span><span id="headlineYoYChange" class="change-chip">—</span></div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-heading"><span>Headline inflation · MoM</span><span class="metric-icon"><i data-lucide="calendar-range"></i></span></div>
+          <div class="metric-value" id="headlineMoM">—</div>
+          <div class="metric-foot"><span id="headlineMoMPrev">Previous month: —</span><span id="headlineMoMChange" class="change-chip">—</span></div>
+        </article>
+        <article class="metric-card contributor-card">
+          <div class="metric-heading"><span>Top contributor · YoY</span><span class="metric-icon"><i data-lucide="award"></i></span></div>
+          <div class="contributor-name" id="topYoYName">—</div>
+          <div class="metric-foot"><span id="topYoYValue">— pp contribution</span><span class="muted">Main categories</span></div>
+        </article>
+        <article class="metric-card contributor-card">
+          <div class="metric-heading"><span>Top contributor · MoM</span><span class="metric-icon"><i data-lucide="zap"></i></span></div>
+          <div class="contributor-name" id="topMoMName">—</div>
+          <div class="metric-foot"><span id="topMoMValue">— pp contribution</span><span class="muted">Main categories</span></div>
+        </article>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading">
+          <div><p class="eyebrow">THE CPI BASKET</p><h2>Main category weights</h2><p class="section-note">Share of the consumer basket, ranked from largest to smallest.</p></div>
+          <button id="weightsToggle" class="button button-secondary"><i data-lucide="pie-chart"></i><span>Show weight breakdown</span></button>
+        </div>
+        <div id="weightsPanel" class="panel weights-panel hidden">
+          <div class="chart-wrap doughnut-wrap"><canvas id="weightsChart" aria-label="CPI category weights"></canvas></div>
+          <div id="weightsLegend" class="weights-legend"></div>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading">
+          <div><p class="eyebrow">LATEST READINGS</p><h2>Inflation by category</h2><p class="section-note">Tap a card on mobile, or hover on desktop, to inspect underlying items.</p></div>
+          <div class="small-control"><label for="categorySort">Sort cards</label><select id="categorySort"><option value="source">Source order</option><option value="yoy-desc">YoY · highest first</option><option value="yoy-asc">YoY · lowest first</option><option value="mom-desc">MoM · highest first</option><option value="mom-asc">MoM · lowest first</option><option value="weight-desc">Weight · highest first</option></select></div>
+        </div>
+        <div id="categoryGrid" class="category-grid"><div class="loading-card">Loading category data…</div></div>
+      </section>
+
+      <section class="section-block" id="contributionSection">
+        <div class="section-heading">
+          <div><p class="eyebrow">WHAT IS DRIVING INFLATION?</p><h2>Contribution analysis</h2><p class="section-note">Compare each component's contribution in percentage points with the aggregate inflation rate.</p></div>
+        </div>
+        <div class="panel analysis-panel">
+          <div class="control-grid">
+            <div class="field"><label for="contributionMeasure">Inflation measure</label><select id="contributionMeasure"><option value="yoy">Year-on-year (YoY)</option><option value="mom">Month-on-month (MoM)</option></select></div>
+            <div class="field"><label for="contributionLevel">Breakdown level</label><select id="contributionLevel"><option value="main">Main categories · headline</option><option value="child">Subcategories / subitems</option></select></div>
+            <div class="field" id="parentSelectWrap"><label for="parentSelect">Parent category</label><select id="parentSelect"></select></div>
+          </div>
+          <div class="chart-toolbar">
+            <div class="range-buttons" role="group" aria-label="Chart date range">
+              <button data-range="6">6 months</button><button data-range="12" class="active">1 year</button><button data-range="24">2 years</button><button data-range="all">All data</button>
+            </div>
+            <div class="range-label" id="rangeLabel">—</div>
+          </div>
+          <div class="chart-wrap contribution-chart-wrap"><canvas id="contributionChart" aria-label="Inflation and contributions chart"></canvas></div>
+          <div class="chart-footnote" id="contributionNote">Contributions are estimated from CPI weights and inflation rates, then reconciled proportionally to the aggregate series. See methodology notes below.</div>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading"><div><p class="eyebrow">METHODOLOGY</p><h2>How to read this dashboard</h2></div></div>
+        <div class="method-grid">
+          <article class="method-card"><span class="method-icon"><i data-lucide="calculator"></i></span><h3>Inflation rates</h3><p>YoY compares the CPI index with the same month a year earlier. MoM compares it with the previous month. Rates are calculated from the source index points.</p></article>
+          <article class="method-card"><span class="method-icon"><i data-lucide="layers-3"></i></span><h3>Contributions</h3><p>Component contributions are shown in percentage points. The initial version uses weight-based allocations reconciled to the published aggregate rate; this is an analytical allocation, not an official statistical decomposition.</p></article>
+          <article class="method-card"><span class="method-icon"><i data-lucide="database"></i></span><h3>Monthly updates</h3><p>Update the CSV in GitHub with the new monthly CPI column. The dashboard fetches the source when refreshed and detects the newest month automatically.</p></article>
+        </div>
+      </section>
+      <footer><span>Egypt CPI Inflation Dashboard</span><span id="updatedAt">Data source: GitHub CSV</span></footer>
+    </main>
+  </div>
+
+  <div id="historyModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-card">
+      <div class="modal-header"><div><p class="eyebrow">HISTORICAL SERIES</p><h2 id="historyTitle">Category history</h2><p id="historySubtitle" class="section-note"></p></div><button class="icon-button" data-close-modal aria-label="Close historical chart"><i data-lucide="x"></i></button></div>
+      <div class="history-controls">
+        <div class="field"><label for="historyMeasure">Measure</label><select id="historyMeasure"><option value="yoy">YoY inflation</option><option value="mom">MoM inflation</option></select></div>
+        <div class="field"><label for="historyItems">Add series</label><select id="historyItems" multiple size="4" aria-label="Select subcategories or subitems"></select><small>Use Ctrl/Cmd to select multiple on desktop; tap options on mobile.</small></div>
+      </div>
+      <div class="chart-toolbar"><div class="range-buttons history-ranges"><button data-range="6">6 months</button><button data-range="12" class="active">1 year</button><button data-range="24">2 years</button><button data-range="all">All data</button></div><div id="historyRangeLabel" class="range-label"></div></div>
+      <div class="chart-wrap history-chart-wrap"><canvas id="historyChart" aria-label="Historical inflation line chart"></canvas></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="script.js"></script>
+</body>
+</html>
