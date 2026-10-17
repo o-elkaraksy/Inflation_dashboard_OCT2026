@@ -14,22 +14,17 @@ function parseDate(label){const m=String(label).match(/^([A-Za-z]{3})-(\d{2}|\d{
 function monthLabel(d){return d.toLocaleDateString("en-GB",{month:"short",year:"numeric"});}
 function indexFor(row,idx){return row.values[idx]??null;}
 function inflation(row,idx,period){const back=period==="yoy"?12:1;if(idx<back)return null;const a=indexFor(row,idx),b=indexFor(row,idx-back);if(a===null||b===null||b===0)return null;return (a/b-1)*100;}
-function rowKind(row){const s=String(row.family||"").toLowerCase().trim();if(s.startsWith("main category"))return "main";if(s.startsWith("sub category"))return "sub";if(s.startsWith("sub item"))return "item";return row.name==="All Items"?"all":"other";}
+function rowKind(row){if(String(row.name||"").trim().toLowerCase()==="all items")return "all";const s=String(row.family||"").toLowerCase().trim();if(s.startsWith("main category"))return "main";if(s.startsWith("sub category"))return "sub";if(s.startsWith("sub item"))return "item";return "other";}
 function rowOrder(row){const m=String(row.family||"").match(/(\d+(?:\.\d+)?)/);return m?Number(m[1]):999;}
-function normalizeRow(row){return {...row,kind:rowKind(row),order:rowOrder(row),weight:num(row.weight),values:row.values};}
+function normalizeRow(row){return {...row,kind:rowKind(row),order:rowOrder(row),weight:num(row.weight),subWeight:num(row.subWeight),values:row.values};}
 function parentKey(row){if(row.kind==="sub")return String(row.order).split(".")[0];if(row.kind==="item")return String(row.order).split(".")[0];return null;}
 function getMainRows(){return state.rows.filter(r=>r.kind==="main");}
 function getAllRow(){return state.rows.find(r=>r.kind==="all")||state.rows.find(r=>r.name.toLowerCase()==="all items");}
 function getChildren(main){return state.rows.filter(r=>(r.kind==="sub"||r.kind==="item")&&parentKey(r)===String(main.order));}
 function getDescendants(main){return state.rows.filter(r=>(r.kind==="sub"||r.kind==="item")&&parentKey(r)===String(main.order));}
 function getChildRows(main){
- const descendants=getDescendants(main);
- // For contribution analysis, use one hierarchy level at a time to avoid double-counting
- // subcategories and their subitems together. Category-card tables still show all descendants.
- const directSubs=descendants.filter(r=>r.kind==="sub");
- if(main.kind==="main" && directSubs.length) return directSubs;
- if(main.kind==="sub") return descendants.filter(r=>r.kind==="item");
- return descendants.filter(r=>r.kind==="item");
+ // Use sub-items directly; intermediate subcategory rows are excluded to avoid double-counting.
+ return state.rows.filter(r=>r.kind==="item"&&parentKey(r)===String(main.order));
 }
 function getItemsWithin(parent){const p=String(parent.order);if(parent.kind==="main")return state.rows.filter(r=>(r.kind==="sub"||r.kind==="item")&&parentKey(r)===p);if(parent.kind==="sub")return state.rows.filter(r=>r.kind==="item"&&String(r.order).split(".")[0]===p.split(".")[0]&&String(r.order).split(".").slice(0,2).join(".")===p);return [];}
 function aggregateRow(){return getAllRow();}
@@ -39,28 +34,30 @@ function rate(row,period,idx=state.latestIndex){return inflation(row,idx,period)
 function previousValidRate(row,period,idx=state.latestIndex){return idx>0?inflation(row,idx-1,period):null;}
 function changeChip(current,previous){if(!Number.isFinite(current)||!Number.isFinite(previous))return "—";const d=current-previous;return `${d>0?"+":""}${d.toFixed(1)} pp`;}
 function setChange(id,current,previous){const el=$(id);el.textContent=changeChip(current,previous);el.classList.toggle("negative",Number.isFinite(current)&&Number.isFinite(previous)&&current<previous);}
-function contributionRaw(rows,period,idx,parent=null){
-  const agg=parent?rate(parent,period,idx):rate(aggregateRow(),period,idx);
-  const valid=rows.map(r=>({row:r,r:inflation(r,idx,period),w:Math.max(0,r.weight??0)})).filter(x=>x.r!==null&&Number.isFinite(x.r));
-  if(agg===null||!valid.length)return {agg,items:[]};
-  let raw=valid.map(x=>({...x,raw:x.w*x.r}));
-  let denom=raw.reduce((s,x)=>s+x.raw,0);
-  if(Math.abs(denom)<1e-9){denom=raw.reduce((s,x)=>s+x.w,0);raw=raw.map(x=>({...x,raw:x.w}));}
-  const totalAbs=raw.reduce((s,x)=>s+Math.abs(x.raw),0);
-  const sum=raw.reduce((s,x)=>s+x.raw,0);
-  // Scale weighted contributions to the aggregate, preserving the relative weighted contributions.
-  if(Math.abs(sum)>1e-9){
-    raw=raw.map(x=>({...x,contribution:x.raw*(agg/sum)}));
-  } else if(totalAbs>0){
-    raw=raw.map(x=>({...x,contribution:x.raw*(agg/totalAbs)}));
-  } else raw=raw.map(x=>({...x,contribution:0}));
-  return {agg,items:raw};
+function contributionRaw(rows,period,idx){
+ const all=aggregateRow(),back=period==="yoy"?12:1;
+ if(idx<back||!all)return {agg:rate(all,period,idx),items:[]};
+ const previousAll=indexFor(all,idx-back),agg=rate(all,period,idx);
+ if(previousAll===null||previousAll===0)return {agg,items:[]};
+ const items=rows.map(row=>{
+  const current=indexFor(row,idx),previous=indexFor(row,idx-back),weight=Math.max(0,row.weight??0);
+  const contribution=current===null||previous===null?null:weight*(current-previous)/previousAll;
+  return {row,r:inflation(row,idx,period),w:weight,contribution};
+ }).filter(x=>x.contribution!==null&&Number.isFinite(x.contribution));
+ return {agg,items};
 }
-function getMainContribution(rows,period,idx){return contributionRaw(rows,period,idx,null);}
+function getMainContribution(rows,period,idx){return contributionRaw(rows,period,idx);}
 function childContribution(parent,rows,period,idx){
-  const agg=rate(parent,period,idx);
-  const result=contributionRaw(rows,period,idx,parent);
-  return {...result,agg};
+ const back=period==="yoy"?12:1,agg=rate(parent,period,idx);
+ if(idx<back)return {agg,items:[]};
+ const base=indexFor(parent,idx-back);
+ if(base===null||base===0)return {agg,items:[]};
+ const items=rows.map(row=>{
+  const current=indexFor(row,idx),previous=indexFor(row,idx-back),weight=Math.max(0,row.subWeight??0);
+  const contribution=current===null||previous===null?null:weight*(current-previous)/base;
+  return {row,r:inflation(row,idx,period),w:weight,contribution};
+ }).filter(x=>x.contribution!==null&&Number.isFinite(x.contribution));
+ return {agg,items};
 }
 function populateOverview(){
  const all=aggregateRow();if(!all)return;
@@ -70,20 +67,20 @@ function populateOverview(){
  setChange("headlineYoYChange",yoy,py);setChange("headlineMoMChange",mom,pm);
  $("latestMonth").textContent=monthLabel(state.dates[state.latestIndex]);
  const mains=getMainRows();
- for(const period of ["yoy","mom"]){const c=getMainContribution(mains,period,state.latestIndex);const top=[...c.items].sort((a,b)=>b.contribution-a.contribution)[0];const nameId=period==="yoy"?"topYoYName":"topMoMName",valId=period==="yoy"?"topYoYValue":"topMoMValue";$(nameId).textContent=top?top.row.name:"—";$(valId).textContent=top?`${pp(top.contribution)} contribution`:"—";}
+ for(const period of ["yoy","mom"]){const c=getMainContribution(mains,period,state.latestIndex);const top=[...c.items].sort((a,b)=>b.contribution-a.contribution)[0];const nameId=period==="yoy"?"topYoYName":"topMoMName",valId=period==="yoy"?"topYoYValue":"topMoMValue";$(nameId).textContent=top?top.row.name:"—";$(valId).textContent=top?`${pp(top.contribution*100)} contribution`:"—";}
 }
 function buildWeightChart(){
  const mains=getMainRows().slice().sort((a,b)=>(b.weight||0)-(a.weight||0));
  const ctx=$("weightsChart").getContext("2d");if(state.weightsChart)state.weightsChart.destroy();
- state.weightsChart=new Chart(ctx,{type:"doughnut",data:{labels:mains.map(r=>r.name),datasets:[{data:mains.map(r=>r.weight||0),backgroundColor:mains.map((r,i)=>COLORS[i%COLORS.length]),borderColor:"#fff",borderWidth:3,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:false,cutout:"65%",plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.label}: ${Number(c.raw).toFixed(1)}%`}}}}});
- $("weightsLegend").innerHTML=mains.map((r,i)=>`<div class="legend-item"><span class="legend-dot" style="background:${COLORS[i%COLORS.length]}"></span><span class="legend-name">${escapeHtml(r.name)}</span><span class="legend-weight">${(r.weight||0).toFixed(1)}%</span></div>`).join("");
+ state.weightsChart=new Chart(ctx,{type:"doughnut",data:{labels:mains.map(r=>r.name),datasets:[{data:mains.map(r=>r.weight||0),backgroundColor:mains.map((r,i)=>COLORS[i%COLORS.length]),borderColor:"#fff",borderWidth:3,hoverOffset:8}]},options:{responsive:true,maintainAspectRatio:false,cutout:"65%",plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.label}: ${(Number(c.raw)*100).toFixed(1)}%`}}}}});
+ $("weightsLegend").innerHTML=mains.map((r,i)=>`<div class="legend-item"><span class="legend-dot" style="background:${COLORS[i%COLORS.length]}"></span><span class="legend-name">${escapeHtml(r.name)}</span><span class="legend-weight">${((r.weight||0)*100).toFixed(1)}%</span></div>`).join("");
 }
 function categoryCardHtml(row,i){
  const y=rate(row,"yoy"),m=rate(row,"mom"),children=getChildRows(row),expanded=state.expanded.has(row.family);
  const details=expanded?detailHtml(row):"";
  return `<article class="category-card ${expanded?"expanded":""}" data-family="${escapeHtml(row.family)}">
  <div class="category-top" role="button" tabindex="0" aria-expanded="${expanded}" data-expand="${escapeHtml(row.family)}">
- <div class="category-title-row"><div class="category-name">${escapeHtml(row.name)}</div><div class="category-weight">${(row.weight||0).toFixed(1)}% weight</div></div>
+ <div class="category-title-row"><div class="category-name">${escapeHtml(row.name)}</div><div class="category-weight">${((row.weight||0)*100).toFixed(1)}% weight</div></div>
  <div class="category-metrics"><div class="category-metric"><strong>${fmt(y)}</strong><span>Annual · YoY</span></div><div class="category-metric"><strong>${fmt(m)}</strong><span>Monthly · MoM</span></div></div></div>
  <div class="category-card-actions"><button class="history-button" data-history="${escapeHtml(row.family)}"><i data-lucide="chart-no-axes-combined"></i> Historical</button><span class="expand-hint" data-expand="${escapeHtml(row.family)}">${expanded?"Hide details":"Explore components"} <i data-lucide="chevron-down"></i></span></div>
  ${details}</article>`;
@@ -93,7 +90,7 @@ function detailHtml(main){
  const sortKey=state[`sort_${main.family}`]||"source";
  const sorted=children.slice().sort((a,b)=>{if(sortKey==="yoy-desc")return (rate(b,"yoy")??-Infinity)-(rate(a,"yoy")??-Infinity);if(sortKey==="yoy-asc")return (rate(a,"yoy")??Infinity)-(rate(b,"yoy")??Infinity);if(sortKey==="mom-desc")return (rate(b,"mom")??-Infinity)-(rate(a,"mom")??-Infinity);if(sortKey==="mom-asc")return (rate(a,"mom")??Infinity)-(rate(b,"mom")??Infinity);if(sortKey==="weight-desc")return (b.weight||0)-(a.weight||0);return a.order-b.order;});
  return `<div class="category-details"><div class="detail-toolbar"><label>${children.length} components</label><select aria-label="Sort components" data-detail-sort="${escapeHtml(main.family)}"><option value="source" ${sortKey==="source"?"selected":""}>Source order</option><option value="yoy-desc" ${sortKey==="yoy-desc"?"selected":""}>YoY · high to low</option><option value="yoy-asc" ${sortKey==="yoy-asc"?"selected":""}>YoY · low to high</option><option value="mom-desc" ${sortKey==="mom-desc"?"selected":""}>MoM · high to low</option><option value="mom-asc" ${sortKey==="mom-asc"?"selected":""}>MoM · low to high</option><option value="weight-desc" ${sortKey==="weight-desc"?"selected":""}>Weight · high to low</option></select></div>
- <div class="detail-table-wrap"><table class="detail-table"><thead><tr><th>Category / item</th><th>Weight</th><th>YoY</th><th>MoM</th></tr></thead><tbody>${sorted.map(r=>`<tr><td>${r.kind==="item"?"↳ ":""}${escapeHtml(r.name)}</td><td>${(r.weight||0).toFixed(1)}%</td><td class="${(rate(r,"yoy")??0)<0?"negative-value":"positive-value"}">${fmt(rate(r,"yoy"))}</td><td class="${(rate(r,"mom")??0)<0?"negative-value":"positive-value"}">${fmt(rate(r,"mom"))}</td></tr>`).join("")}</tbody></table></div></div>`;
+ <div class="detail-table-wrap"><table class="detail-table"><thead><tr><th>Category / item</th><th>Weight</th><th>YoY</th><th>MoM</th></tr></thead><tbody>${sorted.map(r=>`<tr><td>${r.kind==="item"?"↳ ":""}${escapeHtml(r.name)}</td><td>${(((r.kind==="main"?r.weight:r.subWeight)||0)*100).toFixed(1)}%</td><td class="${(rate(r,"yoy")??0)<0?"negative-value":"positive-value"}">${fmt(rate(r,"yoy"))}</td><td class="${(rate(r,"mom")??0)<0?"negative-value":"positive-value"}">${fmt(rate(r,"mom"))}</td></tr>`).join("")}</tbody></table></div></div>`;
 }
 function renderCategories(){
  const mains=getMainRows();const sort=$("categorySort").value;const sorted=mains.slice().sort((a,b)=>{if(sort==="yoy-desc")return (rate(b,"yoy")??-Infinity)-(rate(a,"yoy")??-Infinity);if(sort==="yoy-asc")return (rate(a,"yoy")??Infinity)-(rate(b,"yoy")??Infinity);if(sort==="mom-desc")return (rate(b,"mom")??-Infinity)-(rate(a,"mom")??-Infinity);if(sort==="mom-asc")return (rate(a,"mom")??Infinity)-(rate(b,"mom")??Infinity);if(sort==="weight-desc")return (b.weight||0)-(a.weight||0);return a.order-b.order;});
@@ -128,15 +125,15 @@ function renderContribution(){
  for(let idx=start;idx<=state.latestIndex;idx++){
    const agg=rate(totalRow,period,idx);totalValues.push(agg);
    const result=mainLevel?getMainContribution(rows,period,idx):childContribution(selection.parent,rows,period,idx);
-   const byFamily=new Map(result.items.map(x=>[x.row.family,x.contribution]));
-   contributionsByRow.forEach(x=>x.data.push(byFamily.has(x.row.family)?byFamily.get(x.row.family):null));
+   const byRow=new Map(result.items.map(x=>[x.row,x.contribution]));
+   contributionsByRow.forEach(x=>x.data.push(byRow.has(x.row)?byRow.get(x.row)*100:null));
  }
  const datasets=[{type:"line",label:mainLevel?"Headline inflation":`${selection.parent.name} inflation`,data:totalValues,borderColor:"#172b4d",backgroundColor:"#172b4d",borderWidth:2.5,pointRadius:labels.length>36?0:2.5,pointHoverRadius:5,tension:.25,yAxisID:"y",order:0}];
  contributionsByRow.forEach((item,i)=>datasets.push({type:"bar",label:item.row.name,data:item.data,backgroundColor:COLORS[i%COLORS.length],borderColor:"#fff",borderWidth:1,stack:"contrib",yAxisID:"y",order:2}));
  if(state.contributionChart)state.contributionChart.destroy();
  state.contributionChart=new Chart($("contributionChart"),{data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"bottom",labels:{usePointStyle:true,boxWidth:8,boxHeight:8,padding:14,font:{size:10}}},tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${Number.isFinite(c.raw)?c.raw.toFixed(2)+" pp":"—"}`}}},scales:{x:{stacked:true,grid:{display:false},ticks:{maxTicksLimit:10,maxRotation:0,color:"#77859a",font:{size:10}}},y:{stacked:false,title:{display:true,text:"Inflation / contribution (percentage points)",color:"#77859a",font:{size:10}},grid:{color:"#edf1f6"},ticks:{color:"#77859a",font:{size:10},callback:v=>v+" pp"}}}}});
  $("rangeLabel").textContent=`${labels[0]||"—"} – ${labels[labels.length-1]||"—"}`;
- $("contributionNote").textContent=mainLevel?"Main-category contributions are allocated using their CPI weights and reconciled to the All Items inflation rate for each month. This is an analytical allocation, not an official statistical decomposition.":"Component contributions are allocated using weights relative to the selected parent and reconciled to that parent's inflation rate. This is an analytical allocation, not an official statistical decomposition.";
+ $("contributionNote").textContent=mainLevel?"Main-category contribution = rebased main-category weight × category CPI-index change ÷ previous-period All Items CPI index. Contributions are calculated directly, without proportional reconciliation.":"Sub-item contribution = sub-items weight × sub-item CPI-index change ÷ previous-period CPI index of the selected main category. Intermediate subcategory rows are excluded to avoid double-counting.";
 }
 function openHistory(row){
  state.historyCategory=row;state.historyRange=12;state.historySelected=[];
@@ -159,9 +156,9 @@ function renderHistory(){
 function parseCsv(text){
  const parsed=Papa.parse(text,{header:true,skipEmptyLines:true,dynamicTyping:false});
  if(parsed.errors.length)console.warn("CSV parsing warnings",parsed.errors);
- const fields=parsed.meta.fields||[];const dateFields=fields.slice(3).filter(f=>parseDate(f));
+ const fields=parsed.meta.fields||[];const dateFields=fields.filter(f=>parseDate(f));
  state.dates=dateFields.map(parseDate);state.dateKeys=dateFields;
- state.rows=parsed.data.map(r=>normalizeRow({family:r["category family"],name:r["Category"],weight:num(r["Weights Rebased"]),values:dateFields.map(k=>num(r[k]))})).filter(r=>r.name);
+ state.rows=parsed.data.map(r=>normalizeRow({family:r["category family"],name:r["Category"],subWeight:num(r["sub  items weights"]??r["sub items weights"]),weight:num(r["Weights Rebased"]),values:dateFields.map(k=>num(r[k]))})).filter(r=>r.name);
  state.latestIndex=state.dates.length-1;
 }
 async function loadData(){
